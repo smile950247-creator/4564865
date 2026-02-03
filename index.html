@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+
+<!-- PWA / APP 模式 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#020617">
+
+<title>百家樂分析系統</title>
+
+<style>
+body{background:#020617;color:#e5e7eb;font-family:sans-serif;padding:16px}
+.box{max-width:980px;margin:auto;border:1px solid #334155;border-radius:14px;padding:20px;margin-bottom:16px}
+h2{text-align:center;margin-bottom:10px}
+input,button{width:100%;margin-top:8px;padding:12px;border-radius:10px;border:none;font-size:16px}
+button{background:#16a34a;color:#fff;font-weight:bold}
+.err{color:#fb7185;text-align:center;margin-top:8px}
+.small{font-size:12px;color:#94a3b8;text-align:center}
+label{display:block;margin-top:10px}
+.btns{display:flex;gap:8px;margin-top:8px}
+.btns button{flex:1;font-weight:bold}
+.z{background:#dc2626}.x{background:#2563eb}.h{background:#16a34a}
+.del{background:#475569}.clr{background:#7c2d12}
+.panel{margin-top:14px;border:1px solid #334155;border-radius:12px;padding:14px}
+.row{margin:6px 0}
+.note{font-size:13px;color:#cbd5f5;margin-top:6px}
+ul{margin:6px 0 0 18px;padding:0}
+li{margin:4px 0}
+</style>
+</head>
+
+<body>
+
+<!-- ===== 序號登入 ===== -->
+<div class="box" id="lockBox">
+  <h2>🔐 請輸入使用序號</h2>
+  <input id="licenseInput">
+  <button onclick="checkLicense()">進入系統</button>
+  <div class="err" id="msg"></div>
+</div>
+
+<!-- ===== 系統主體 ===== -->
+<div class="box" id="app" style="display:none">
+<h2>🎲 百家樂分析系統</h2>
+<div id="remainDays" class="small"></div>
+<div id="activeTime" class="small"></div>
+
+<div class="btns">
+  <button class="z" onclick="add('莊')">莊</button>
+  <button class="x" onclick="add('閒')">閒</button>
+  <button class="h" onclick="add('和')">和</button>
+</div>
+
+<div class="btns">
+  <button class="del" onclick="undo()">回退</button>
+  <button class="clr" onclick="resetAll()">清空</button>
+</div>
+
+<div id="roadView" class="small"></div>
+
+<label>本金</label>
+<input id="bankroll" type="number" value="1000">
+
+<label>基礎下注（1u）</label>
+<input id="baseBet" type="number" value="100">
+<div class="note">
+📌 基礎下注建議（僅供參考）：
+<ul>
+<li>本金 ÷ 30</li>
+<li>或固定 50 / 100</li>
+<li>可依個人風險承受度自行調整</li>
+</ul>
+</div>
+
+<button onclick="analyze()">開始分析</button>
+
+<div class="panel">
+  <div class="row">🟥 大路：<span id="bigRoad">-</span></div>
+  <div class="row">👁️ 大眼仔：<span id="eyeRoad">-</span></div>
+  <div class="row">🟩 小路：<span id="smallRoad">-</span></div>
+  <div class="row">🐜 蟑螂路：<span id="cockRoad">-</span></div>
+</div>
+
+<div class="panel" id="result"></div>
+
+<div class="panel">
+  <div id="reason"></div>
+  <div id="betNote"></div>
+  <div id="recent"></div>
+</div>
+
+<div class="small">FINAL｜專業完整版（可交付）</div>
+</div>
+
+<script>
+/* ================= 序號系統：2 裝置制 ================= */
+const SECRET="W@R1208#BJL";
+
+function deviceId(){
+  let id=localStorage.getItem("bjl_device");
+  if(!id){
+    id=crypto.randomUUID();
+    localStorage.setItem("bjl_device",id);
+  }
+  return id;
+}
+
+function checkLicense(){
+  const key=licenseInput.value.trim();
+  if(!key.startsWith("BJL-")){msg.innerText="序號錯誤";return;}
+  try{
+    const d=JSON.parse(atob(key.split("-")[1]));
+    if(d.k!==SECRET){msg.innerText="驗證失敗";return;}
+
+    let bind=JSON.parse(localStorage.getItem("bind_"+key)||"null");
+    if(!bind) bind={devices:[],start:Date.now()};
+
+    const did=deviceId();
+    if(!bind.devices.includes(did)){
+      if(bind.devices.length>=2){
+        msg.innerText="此序號已達裝置上限（2 台）";
+        return;
+      }
+      bind.devices.push(did);
+      localStorage.setItem("bind_"+key,JSON.stringify(bind));
+    }
+
+    const remain=Math.ceil((bind.start+d.d*86400000-Date.now())/86400000);
+    if(remain<=0){msg.innerText="使用期限已到";return;}
+
+    lockBox.style.display="none";
+    app.style.display="block";
+    remainDays.innerText=`⏳ 剩餘天數：${remain} 天`;
+    activeTime.innerText=`🕒 啟用時間：${new Date(bind.start).toLocaleString()}`;
+  }catch(e){
+    msg.innerText="序號解析失敗";
+  }
+}
+
+/* ================= 分析核心（完整規律） ================= */
+let road=[],skipNext=false,lastHadSignal=false;
+
+function add(v){road.push(v);render();}
+function undo(){road.pop();render();}
+function resetAll(){road=[];render();skipNext=false;lastHadSignal=false;}
+function render(){roadView.innerText=road.join(" ");}
+
+function cleanRoad(){return road.filter(v=>v!=="和");}
+function opp(v){return v==="莊"?"閒":"莊";}
+
+/* 和局兩顆 → 看一把 */
+function tieStreak(){
+  let c=0;
+  for(let i=road.length-1;i>=0;i--){
+    if(road[i]==="和")c++; else break;
+  }
+  return c;
+}
+
+/* 四路 */
+function fourRoad(r){
+  let cz=0,cx=0;
+  for(let i=r.length-1;i>=0;i--){
+    if(r[i]==="莊"&&cx===0)cz++;
+    else if(r[i]==="閒"&&cz===0)cx++;
+    else break;
+  }
+  return {
+    big:{dir:cz>=2?(cz>cx?"莊":"閒"):"破",len:Math.max(cz,cx)},
+    eye:{dir:r.at(-1)||"破",len:Math.max(cz,cx)},
+    small:{dir:r.at(-1)||"破",len:Math.max(cz,cx)},
+    cock:{dir:Math.abs(cz-cx)>=3?(cz>cx?"莊":"閒"):"破",len:Math.max(cz,cx)}
+  };
+}
+
+/* 長龍 ≥5 */
+function longDragon(r){
+  let c=1;
+  for(let i=r.length-1;i>0;i--){
+    if(r[i]===r[i-1])c++; else break;
+  }
+  return c>=5?r[r.length-1]:null;
+}
+
+/* 單跳 1-1-1-1 */
+function singleJump(r){
+  if(r.length<4)return null;
+  const s=r.slice(-4);
+  for(let i=1;i<4;i++)if(s[i]===s[i-1])return null;
+  return opp(s[3]);
+}
+
+/* 結構型 */
+function structure(r){
+  let b=[],c=r[0],n=1;
+  for(let i=1;i<r.length;i++){
+    if(r[i]===c)n++;
+    else{b.push({v:c,n});c=r[i];n=1;}
+  }
+  b.push({v:c,n});
+  if(b.length<4)return null;
+  const last=b[b.length-1].v;
+  const p=b.slice(-4).map(x=>x.n).join("-");
+  if(p==="1-2-1-2")return{t:"一房兩廳",d:opp(last)};
+  if(p==="2-2-2-2")return{t:"雙跳",d:opp(last)};
+  if(p==="1-3-1-3")return{t:"一房三廳",d:opp(last)};
+  if(p==="3-3-3-3")return{t:"九宮格",d:opp(last)};
+  return null;
+}
+
+/* 連續顆數 */
+function streak(r){
+  let c=1;
+  for(let i=r.length-1;i>0;i--){
+    if(r[i]===r[i-1])c++; else break;
+  }
+  return c;
+}
+
+function analyze(){
+  const r=cleanRoad();
+  if(r.length<5){alert("至少 5 手（不含和）");return;}
+
+  if(tieStreak()>=2)skipNext=true;
+
+  if(skipNext){
+    skipNext=false;
+    result.innerHTML=`<div class="row"><b>推薦方向：</b>觀望</div>
+    <div class="row"><b>出手規律：</b>觀察</div>
+    <div class="row"><b>建議下注：</b>0</div>`;
+    reason.innerHTML=`<b>出手依據：</b>
+    <ul>
+      <li>連續出現兩顆和局</li>
+      <li>牌局節奏不明確</li>
+      <li>依風控原則暫停一把觀察</li>
+    </ul>`;
+    betNote.innerText="—";
+    recent.innerText=r.slice(-3).join(" → ");
+    return;
+  }
+
+  let dir="觀望",rule="",bet=0,betType="";
+  const base=+baseBet.value;
+
+  const fr=fourRoad(r);
+  bigRoad.innerText=fr.big.dir;
+  eyeRoad.innerText=fr.eye.dir;
+  smallRoad.innerText=fr.small.dir;
+  cockRoad.innerText=fr.cock.dir;
+
+  const z=[fr.big.dir,fr.eye.dir,fr.small.dir,fr.cock.dir].filter(v=>v==="莊").length;
+  const x=[fr.big.dir,fr.eye.dir,fr.small.dir,fr.cock.dir].filter(v=>v==="閒").length;
+  const fourOK=(z>=2||x>=2);
+
+  /* 四路剛好兩路 = 6 顆 → 小注反打一顆 */
+  const long6=[fr.big,fr.eye,fr.small,fr.cock].filter(o=>o.len===6).length;
+  if(long6===2){
+    dir=z>=2?"閒":"莊";
+    rule="四路觸底反打";
+    bet=base;
+    betType="穩健派";
+  }else{
+    const ld=longDragon(r);
+    const sj=singleJump(r);
+    const st=structure(r);
+
+    if(ld){dir=ld;rule="長龍";}
+    else if(sj){dir=sj;rule="單跳";}
+    else if(st){dir=st.d;rule=st.t;}
+    else if(fourOK){dir=z>=2?"莊":"閒";rule="四路共識";}
+
+    if(dir!=="觀望"){
+      if(rule==="長龍")betType="均注";
+      else if(st&&fourOK)betType="加強派";
+      else betType="穩健派";
+    }
+
+    const s=streak(r);
+    if(dir!=="觀望"){
+      if(betType==="加強派")bet=base*3;
+      else if(s>=2)bet=base*2;
+      else bet=base;
+    }
+  }
+
+  result.innerHTML=`<div class="row"><b>推薦方向：</b>${dir}</div>
+  <div class="row"><b>出手規律：</b>${rule||"觀察"}</div>
+  <div class="row"><b>建議下注：</b>${bet}</div>`;
+
+  reason.innerHTML=rule?`
+  <b>出手依據：</b>
+  <ul>
+    <li>命中規律：${rule}</li>
+    <li>四路狀態：大路 ${fr.big.dir} / 大眼仔 ${fr.eye.dir} / 小路 ${fr.small.dir} / 蟑螂路 ${fr.cock.dir}</li>
+    <li>四路中至少兩路方向一致，具備共識條件</li>
+    <li>依當前節奏與結構判斷具延續性</li>
+  </ul>`:
+  `<b>出手依據：</b>
+  <ul>
+    <li>尚未形成明確節奏或結構</li>
+    <li>四路共識不足</li>
+    <li>建議持續觀察</li>
+  </ul>`;
+
+  betNote.innerHTML=betType?`
+  <b>配注說明：</b>
+  <ul>
+    <li>目前配注策略：${betType}</li>
+    <li>穩健派：1u</li>
+    <li>均注：趨勢延續</li>
+    <li>加強派：結構＋共識成立</li>
+  </ul>`:"—";
+
+  recent.innerText=r.slice(-3).join(" → ");
+
+  if(lastHadSignal && dir==="觀望")skipNext=true;
+  lastHadSignal=(dir!=="觀望");
+}
+</script>
+
+</body>
+</html>
